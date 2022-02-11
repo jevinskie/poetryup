@@ -1,6 +1,8 @@
+import io
 import logging
 import re
 import subprocess
+import sys
 from dataclasses import dataclass, field
 from typing import List, Optional, Union
 
@@ -8,6 +10,11 @@ import tomlkit
 from packaging import version as version_
 from tomlkit import items
 
+import poetry
+from poetry.console.application import Application
+from cleo.io.inputs.argv_input import ArgvInput
+from cleo.io.outputs.stream_output import StreamOutput
+from cleo.io.io import IO
 
 @dataclass
 class Dependency:
@@ -62,13 +69,13 @@ class Pyproject:
             dependencies.append(dependency)
 
         # get dev-dependencies
-        for name, version in table.get("dev-dependencies", {}).items():
-            dependency = Dependency(
-                name=name,
-                version=version,
-                group="dev",
-            )
-            dependencies.append(dependency)
+        # for name, version in table.get("dev-dependencies", {}).items():
+        #     dependency = Dependency(
+        #         name=name,
+        #         version=version,
+        #         group="dev",
+        #     )
+        #     dependencies.append(dependency)
 
         # get dependencies organized in groups
         for group, deps in table.get("group", {}).items():
@@ -166,10 +173,10 @@ class Pyproject:
                 table["dependencies"][dependency.name] = dependency.version
             elif (
                 dependency.group == "dev"
-                and table.get("dev-dependencies", {}).get(dependency.name)
+                and table["group"]["dev"].get("dependencies", {}).get(dependency.name)
                 is not None
             ):
-                table["dev-dependencies"][dependency.name] = dependency.version
+                table["group"]["dev"]["dependencies"][dependency.name] = dependency.version
             elif (
                 table.get("group", {})
                 .get(dependency.group, {})
@@ -191,16 +198,7 @@ class Pyproject:
             The poetry version installed
         """
 
-        return (
-            subprocess.run(
-                ["poetry", "--version"],
-                capture_output=True,
-            )
-            .stdout.decode()  # command returns: 'Poetry version x.y.z'
-            .rsplit(" ", 1)
-            .pop()
-            .strip()
-        )
+        return poetry.__version__.__version__
 
     @staticmethod
     def __run_poetry_show() -> str:
@@ -210,16 +208,25 @@ class Pyproject:
             The output from the poetry show command
         """
 
-        return subprocess.run(
-            ["poetry", "show", "--tree"],
-            capture_output=True,
-        ).stdout.decode()
+        app = Application()
+        show_cmd = app.get("show")
+        args = ArgvInput(["poetry", "show", "--tree"])
+        out = io.StringIO()
+        outs = StreamOutput(out)
+        cmd_io = IO(args, outs, outs)
+        show_cmd.run(cmd_io)
+        return out.getvalue()
 
     @staticmethod
     def __run_poetry_update() -> None:
         """Run poetry update command"""
 
-        subprocess.run(["poetry", "update"])
+        app = Application()
+        update_cmd = app.get("update")
+        args = ArgvInput(["poetry", "update", "--tree"])
+        outs = StreamOutput(sys.stdout)
+        cmd_io = IO(args, outs, outs)
+        update_cmd.run(cmd_io)
 
     def __run_poetry_add(
         self,
@@ -233,11 +240,20 @@ class Pyproject:
             group: The group the package(s) should be added to
         """
 
+        app = Application()
+        add_cmd = app.get("add")
+        args = ["poetry", "add"]
+
         if group is None or group == "default":
-            subprocess.run(["poetry", "add", *packages])
-        elif group == "dev" and self.poetry_version < version_.parse("1.2.0"):
-            subprocess.run(["poetry", "add", *packages, f"--{group}"])
-        elif self.poetry_version >= version_.parse("1.2.0"):
-            subprocess.run(["poetry", "add", *packages, f"--group {group}"])
+            args += packages
+        elif group == "dev" and self.poetry_version < version_.parse("1.2.0a0"):
+            args += [f"--{group}", *packages,]
+        elif self.poetry_version >= version_.parse("1.2.0a0"):
+            args += ["--group", group, *packages]
         else:
             logging.info(f"Couldn't add package(s) '{packages}'")
+
+        args = ArgvInput(args)
+        outs = StreamOutput(sys.stdout)
+        cmd_io = IO(args, outs, outs)
+        add_cmd.run(cmd_io)
